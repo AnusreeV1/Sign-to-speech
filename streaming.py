@@ -21,6 +21,7 @@ from streamlit_webrtc import (
 #spell = SpellChecker()
 
 # Prepare data generator for standardizing frames before sending them into the model.
+st.set_page_config(layout="wide")
 @st.cache(allow_output_mutation=True)
 def update_slider():
     return {"slide":0}
@@ -152,23 +153,32 @@ if not draw_bounds:
     
     
 if draw_bounds:
-    webrtc_ctx = webrtc_streamer(
-        key="Hemashirisha123",
-        mode=WebRtcMode.SENDRECV,
-        video_transformer_factory=VideoTransformer,
-        async_transform=True,
-    )
-    if webrtc_ctx.video_transformer:
-        #slider_value=update_slider()
-        webrtc_ctx.video_transformer.x_=slider_value["slide"]
+    
+    col1, col2 = st.beta_columns(2)
+    with col2:
+        st.markdown("Here are the commmon phrases, Just click on the button and play the audio\n")
+        for i in common_words:
+            if(st.button(i,key=i)):
+                mp3_fp = BytesIO()
+                tts = gTTS(i)
+                tts.write_to_fp(mp3_fp)   
+                st.audio(mp3_fp)
+    
+    with col1:
+        speak=st.button("Speak")
+        st_audio=st.empty()
+        webrtc_ctx = webrtc_streamer(
+            key="Hemashirisha123",
+            mode=WebRtcMode.SENDRECV,
+            video_transformer_factory=VideoTransformer,
+            async_transform=True,
+        )
+     
 
-    st.markdown("Here are the commmon phrases, Just click on the button and play the audio\n")
-    for i in common_words:
-        if(st.button(i,key=i)):
-            mp3_fp = BytesIO()
-            tts = gTTS(i)
-            tts.write_to_fp(mp3_fp)   
-            st.audio(mp3_fp)
+
+        if webrtc_ctx.video_transformer:
+            #slider_value=update_slider()
+            webrtc_ctx.video_transformer.x_=slider_value["slide"]
             
 
   
