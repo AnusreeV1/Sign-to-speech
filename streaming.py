@@ -21,6 +21,10 @@ from streamlit_webrtc import (
 #spell = SpellChecker()
 
 # Prepare data generator for standardizing frames before sending them into the model.
+@st.cache(allow_output_mutation=True)
+def update_slider():
+    return {"slide":0}
+
 data_generator = ImageDataGenerator(samplewise_center=True, samplewise_std_normalization=True)
 
 # Loading the model.
@@ -44,6 +48,7 @@ class DrawBounds(VideoTransformerBase):
     x_:int
     y_:int
     def __init__(self) -> None:
+        
         self.frame_lock = threading.Lock()
     def transform(self,frame:av.VideoFrame) -> np.ndarray:
         img=frame.to_ndarray(format="bgr24")
@@ -52,11 +57,11 @@ class DrawBounds(VideoTransformerBase):
 
 
 class VideoTransformer(VideoTransformerBase):
-    x_:int
-    y_:int
     frame_lock: threading.Lock
+    x_:int
     def __init__(self) -> None:
         self.classes_dict={}
+        # DrawBounds().__init__()
         for i in classes:
             self.classes_dict[i]=0
         self.blank_flag=0
@@ -67,6 +72,7 @@ class VideoTransformer(VideoTransformerBase):
         
     def predict(self):
         # global word,current_symbol,sentence,classes_dict,classes
+        
         global classes
         self.current_symbol=self.predicted_class
         self.classes_dict[self.current_symbol]+=1
@@ -134,12 +140,16 @@ class VideoTransformer(VideoTransformerBase):
 draw_bounds=False
 draw_bounds=st.checkbox("The box is in correct position", value=False)
 common_words=['Good morning','Good afternoon','Good night','Hello','Hi','How are you?','I am fine','What are you doing?','Thank you','Sorry','Okay']
-x_axis=0
+slider_value=update_slider()
+x_axis=slider_value["slide"]
 if not draw_bounds:
     webrtc_ctx1=webrtc_streamer(key="draw_box",mode=WebRtcMode.SENDRECV,video_transformer_factory=DrawBounds,async_transform=True,)
-    x_axis = st.slider("X-axis", 1, 200, 0, 2)
+    
+    x_axis = st.slider("X-axis", 1, 200,slider_value["slide"],2)
+    slider_value["slide"]=x_axis
     if (webrtc_ctx1.video_transformer) :
         webrtc_ctx1.video_transformer.x_=x_axis
+    
     
 if draw_bounds:
     webrtc_ctx = webrtc_streamer(
@@ -149,7 +159,9 @@ if draw_bounds:
         async_transform=True,
     )
     if webrtc_ctx.video_transformer:
-        webrtc_ctx.video_transformer.x_ = x_axis
+        #slider_value=update_slider()
+        webrtc_ctx.video_transformer.x_=slider_value["slide"]
+
     st.markdown("Here are the commmon phrases, Just click on the button and play the audio\n")
     for i in common_words:
         if(st.button(i,key=i)):
