@@ -78,22 +78,22 @@ class VideoTransformer(VideoTransformerBase):
         self.current_symbol=self.predicted_class
         self.classes_dict[self.current_symbol]+=1
         #print(current_symbol)
-        if(self.current_symbol=='nothing' and self.classes_dict[self.current_symbol]>50):
-            #print("Nothing")
-            #word=spell.correction(word)
-            if(len(self.sentence)==0):
-                return
-            mp3_fp=BytesIO()
-            tts = gTTS(self.word)
-            tts.write_to_fp(mp3_fp)
-            for i in classes:
-                self.classes_dict[i]=0
-            if(len(self.sentence)>0):
-                self.sentence+=" "
+        # if(self.current_symbol=='nothing' and self.classes_dict[self.current_symbol]>50):
+        #     print("Nothing")
+        #     word=spell.correction(word)
+        #     if(len(self.sentence)==0):
+        #         return
+        #     mp3_fp=BytesIO()
+        #     tts = gTTS(self.word)
+        #     tts.write_to_fp(mp3_fp)
+        #     for i in classes:
+        #         self.classes_dict[i]=0
+        #     if(len(self.sentence)>0):
+        #         self.sentence+=" "
             
-            self.sentence+=self.word
-            self.word=""
-            return
+        #     self.sentence+=self.word
+        #     self.word=""
+        #     return
         if(self.classes_dict[self.current_symbol]>50):
             for i in classes:
                 if(i==self.current_symbol):
@@ -109,6 +109,7 @@ class VideoTransformer(VideoTransformerBase):
                 if(len(self.sentence)>0):
                     self.sentence+=" "
                 self.sentence+=self.word
+                st.markdown(sentence)
                 self.word=""
             else:
                 for i in classes:
@@ -165,7 +166,6 @@ if draw_bounds:
                 st.audio(mp3_fp)
     
     with col1:
-        speak=st.button("Speak")
         st_audio=st.empty()
         webrtc_ctx = webrtc_streamer(
             key="Hemashirisha123",
@@ -179,6 +179,14 @@ if draw_bounds:
         if webrtc_ctx.video_transformer:
             #slider_value=update_slider()
             webrtc_ctx.video_transformer.x_=slider_value["slide"]
+            if st.button('Speak'):
+                webrtc_ctx.video_transformer.sentence += ""
+                sen = webrtc_ctx.video_transformer.sentence
+                st.markdown(sen)
+                mp4 = BytesIO()
+                tts = gTTS(sen)
+                tts.write_to_fp(mp4)
+                st.audio(mp4)
             
 
   
