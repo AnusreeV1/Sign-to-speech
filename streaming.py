@@ -15,6 +15,10 @@ from streamlit_webrtc import (
     WebRtcMode,
     webrtc_streamer,
 )
+from bokeh.models.widgets import Button
+from bokeh.models import CustomJS
+from streamlit_bokeh_events import streamlit_bokeh_events
+
 #from textblob import TextBlob
 #from spellchecker import SpellChecker
 
@@ -109,7 +113,7 @@ class VideoTransformer(VideoTransformerBase):
                 if(len(self.sentence)>0):
                     self.sentence+=" "
                 self.sentence+=self.word
-                st.markdown(sentence)
+                #st.markdown(self.sentence)
                 self.word=""
             else:
                 for i in classes:
@@ -155,17 +159,63 @@ if not draw_bounds:
     
 if draw_bounds:
     
-    col1, col2 = st.beta_columns(2)
-    with col2:
-        st.markdown("Here are the commmon phrases, Just click on the button and play the audio\n")
+    col1, col2, col3 = st.beta_columns(3)
+    with col3:
+        st.header("Here are the commmon phrases, Just click on the button and play the audio\n")
         for i in common_words:
             if(st.button(i,key=i)):
                 mp3_fp = BytesIO()
                 tts = gTTS(i)
                 tts.write_to_fp(mp3_fp)   
                 st.audio(mp3_fp)
-    
+
+    with col2:
+        # tts_button = Button(label="Speak", width=100)
+
+        # tts_button.js_on_event("button_click", CustomJS(code=f"""
+        #     var u = new SpeechSynthesisUtterance();
+        #     u.text = "{text}";
+        #     u.lang = 'en-US';
+
+        #     speechSynthesis.speak(u);
+        #     """))
+        # st.bokeh_chart(tts_button)
+
+        st.header("Speech to text")
+        stt_button = Button(label="Speak", width=100)
+        stt_button.js_on_event("button_click", CustomJS(code="""
+            var recognition = new webkitSpeechRecognition();
+            recognition.continuous = true;
+            recognition.interimResults = true;
+        
+            recognition.onresult = function (e) {
+                var value = "";
+                for (var i = e.resultIndex; i < e.results.length; ++i) {
+                    if (e.results[i].isFinal) {
+                        value += e.results[i][0].transcript;
+                    }
+                }
+                if ( value != "") {
+                    document.dispatchEvent(new CustomEvent("GET_TEXT", {detail: value}));
+                }
+            }
+            recognition.start();
+            """))
+
+        result = streamlit_bokeh_events(
+            stt_button,
+            events="GET_TEXT",
+            key="listen",
+            refresh_on_update=False,
+            override_height=75,
+            debounce_time=0)
+
+        if result:
+            if "GET_TEXT" in result:
+                st.write(result.get("GET_TEXT"))
+
     with col1:
+        st.header("Sign to speech")
         st_audio=st.empty()
         webrtc_ctx = webrtc_streamer(
             key="Hemashirisha123",
@@ -174,8 +224,6 @@ if draw_bounds:
             async_transform=True,
         )
      
-
-
         if webrtc_ctx.video_transformer:
             #slider_value=update_slider()
             webrtc_ctx.video_transformer.x_=slider_value["slide"]
