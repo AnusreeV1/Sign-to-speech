@@ -1,40 +1,60 @@
-import streamlit as st
-import av
-from gtts import gTTS
-from io import BytesIO
+import queue
 import threading
+import time
+import urllib.request
+from collections import deque
+from io import BytesIO
+from pathlib import Path
+from string import ascii_uppercase
+from typing import List
+# from fer import FER
+import av
 import cv2
 import numpy as np
-import time
-from string import ascii_uppercase
+import pydub
+import streamlit as st
+from bokeh.models import CustomJS
+from bokeh.models.widgets import Button
+from gtts import gTTS
+from streamlit_bokeh_events import streamlit_bokeh_events
+from streamlit_webrtc import (ClientSettings,
+                              VideoTransformerBase, WebRtcMode,
+                              webrtc_streamer)
 from tensorflow.keras.models import load_model
 from tensorflow.keras.preprocessing.image import ImageDataGenerator
-from streamlit_webrtc import (
-    ClientSettings,
-    VideoTransformerBase,
-    WebRtcMode,
-    webrtc_streamer,
-)
-from bokeh.models.widgets import Button
-from bokeh.models import CustomJS
-from streamlit_bokeh_events import streamlit_bokeh_events
-
-#from textblob import TextBlob
-#from spellchecker import SpellChecker
-
-#spell = SpellChecker()
-
-# Prepare data generator for standardizing frames before sending them into the model.
 st.set_page_config(layout="wide")
+HERE = Path(__file__).parent
+
+WEBRTC_CLIENT_SETTINGS = ClientSettings(
+    media_stream_constraints={"video": True, "audio": False},
+)
 @st.cache(allow_output_mutation=True)
 def update_slider():
     return {"slide":0}
+@st.cache
+def load_model_from_drive():
+
+    save_dest = Path('models')
+    save_dest.mkdir(exist_ok=True)
+    
+    f_checkpoint = Path("models/asl_alphabet_9575.h5")
+
+    if not f_checkpoint.exists():
+        with st.spinner("Downloading model... this may take awhile! \n Don't stop it!"):
+            import gdown
+            url = 'https://drive.google.com/uc?id=1mmw9i0zPuTxWWaXf1t2X7zjL0riQCjgy'
+            url="https://drive.google.com/uc?id=1-AhrgzAHbGwpvQdZ5zA1lintqLkLX_mP"
+            output = 'models/asl_alphabet_9575.h5'
+            gdown.download(url, output, quiet=False)
+    
+    model = load_model("models/asl_alphabet_9575.h5")
+    return model
 
 data_generator = ImageDataGenerator(samplewise_center=True, samplewise_std_normalization=True)
 
 # Loading the model.
 MODEL_NAME = 'models/asl_alphabet_{}.h5'.format(9575)
-model = load_model(MODEL_NAME)
+model = load_model_from_drive()
 
 # Setting up the input image size and frame crop size.
 IMAGE_SIZE = 200
@@ -60,7 +80,7 @@ class DrawBounds(VideoTransformerBase):
         cv2.rectangle(img, (self.x_, 0), (CROP_SIZE+self.x_, CROP_SIZE), (0, 255, 0), 3)
         return img
 
-
+emotional_button=st.empty()    
 class VideoTransformer(VideoTransformerBase):
     frame_lock: threading.Lock
     x_:int
@@ -74,30 +94,17 @@ class VideoTransformer(VideoTransformerBase):
         self.current_symbol=""
         self.sentence=""
         self.predicted_class=""
-        
+    
     def predict(self):
         # global word,current_symbol,sentence,classes_dict,classes
-        
+        # if(len(self.sentence)==0):
+        #     detector = FER()
+        #     detector.detect_emotions(img)
+        #     emotion, score = detector.top_emotion(img)
+        #     emotional_button=st.button(emotion)
         global classes
         self.current_symbol=self.predicted_class
         self.classes_dict[self.current_symbol]+=1
-        #print(current_symbol)
-        # if(self.current_symbol=='nothing' and self.classes_dict[self.current_symbol]>50):
-        #     print("Nothing")
-        #     word=spell.correction(word)
-        #     if(len(self.sentence)==0):
-        #         return
-        #     mp3_fp=BytesIO()
-        #     tts = gTTS(self.word)
-        #     tts.write_to_fp(mp3_fp)
-        #     for i in classes:
-        #         self.classes_dict[i]=0
-        #     if(len(self.sentence)>0):
-        #         self.sentence+=" "
-            
-        #     self.sentence+=self.word
-        #     self.word=""
-        #     return
         if(self.classes_dict[self.current_symbol]>50):
             for i in classes:
                 if(i==self.current_symbol):
@@ -113,7 +120,6 @@ class VideoTransformer(VideoTransformerBase):
                 if(len(self.sentence)>0):
                     self.sentence+=" "
                 self.sentence+=self.word
-                #st.markdown(self.sentence)
                 self.word=""
             else:
                 for i in classes:
@@ -192,13 +198,14 @@ if draw_bounds:
                 }
             }
             recognition.start();
+            this.addclass='active'
             """))
 
         result = streamlit_bokeh_events(
             stt_button,
             events="GET_TEXT",
             key="listen",
-            refresh_on_update=False,
+            refresh_on_update=True,
             override_height=75,
             debounce_time=0)
 
@@ -214,6 +221,7 @@ if draw_bounds:
             mode=WebRtcMode.SENDRECV,
             video_transformer_factory=VideoTransformer,
             async_transform=True,
+            client_settings=WEBRTC_CLIENT_SETTINGS,
         )
      
         if webrtc_ctx.video_transformer:
