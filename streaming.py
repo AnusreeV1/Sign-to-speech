@@ -74,6 +74,23 @@ def download_file(url, download_to: Path, expected_size=None):
             weights_warning.empty()
         if progress_bar is not None:
             progress_bar.empty()
+@st.cache
+def load_model_from_drive():
+
+    save_dest = Path('models')
+    save_dest.mkdir(exist_ok=True)
+    
+    f_checkpoint = Path("models/asl_alphabet_9575.h5")
+
+    if not f_checkpoint.exists():
+        with st.spinner("Downloading model... this may take awhile! \n Don't stop it!"):
+            import gdown
+            url = 'https://drive.google.com/uc?id=1mmw9i0zPuTxWWaXf1t2X7zjL0riQCjgy'
+            output = 'spam.txt'
+            gdown.download(url, output, quiet=False)
+    
+    model = load_model(f_checkpoint)
+    return model
 
 MODEL_URL = "https://github.com/mozilla/DeepSpeech/releases/download/v0.9.3/deepspeech-0.9.3-models.pbmm"  # noqa
 LANG_MODEL_URL = "https://github.com/mozilla/DeepSpeech/releases/download/v0.9.3/deepspeech-0.9.3-models.scorer"  # noqa
@@ -159,7 +176,7 @@ data_generator = ImageDataGenerator(samplewise_center=True, samplewise_std_norma
 
 # Loading the model.
 MODEL_NAME = 'models/asl_alphabet_{}.h5'.format(9575)
-model = load_model(MODEL_NAME)
+model = load_model_from_drive(MODEL_NAME)
 
 # Setting up the input image size and frame crop size.
 IMAGE_SIZE = 200
