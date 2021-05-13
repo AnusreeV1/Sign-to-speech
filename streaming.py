@@ -1,31 +1,189 @@
-import streamlit as st
-import av
-from gtts import gTTS
-from io import BytesIO
+import queue
 import threading
+import time
+import urllib.request
+from collections import deque
+from io import BytesIO
+from pathlib import Path
+from string import ascii_uppercase
+from typing import List
+
+
+import av
 import cv2
 import numpy as np
-import time
-from string import ascii_uppercase
+import pydub
+import streamlit as st
+from bokeh.models import CustomJS
+from bokeh.models.widgets import Button
+from gtts import gTTS
+from streamlit_bokeh_events import streamlit_bokeh_events
+from streamlit_webrtc import (AudioProcessorBase,
+                              ClientSettings,
+                              VideoTransformerBase, WebRtcMode,
+                              webrtc_streamer)
 from tensorflow.keras.models import load_model
 from tensorflow.keras.preprocessing.image import ImageDataGenerator
-from streamlit_webrtc import (
-    ClientSettings,
-    VideoTransformerBase,
-    WebRtcMode,
-    webrtc_streamer,
-)
-from bokeh.models.widgets import Button
-from bokeh.models import CustomJS
-from streamlit_bokeh_events import streamlit_bokeh_events
 
-#from textblob import TextBlob
-#from spellchecker import SpellChecker
-
-#spell = SpellChecker()
-
-# Prepare data generator for standardizing frames before sending them into the model.
+HERE = Path(__file__).parent
 st.set_page_config(layout="wide")
+WEBRTC_CLIENT_SETTINGS = ClientSettings(
+    media_stream_constraints={"video": True, "audio": False},
+)
+
+def download_file(url, download_to: Path, expected_size=None):
+    # Don't download the file twice.
+    # (If possible, verify the download using the file length.)
+    if download_to.exists():
+        if expected_size:
+            if download_to.stat().st_size == expected_size:
+                return
+        else:
+            st.info(f"{url} is already downloaded.")
+            if not st.button("Download again?"):
+                return
+
+    download_to.parent.mkdir(parents=True, exist_ok=True)
+
+    # These are handles to two visual elements to animate.
+    weights_warning, progress_bar = None, None
+    try:
+        weights_warning = st.warning("Downloading %s..." % url)
+        progress_bar = st.progress(0)
+        with open(download_to, "wb") as output_file:
+            with urllib.request.urlopen(url) as response:
+                length = int(response.info()["Content-Length"])
+                counter = 0.0
+                MEGABYTES = 2.0 ** 20.0
+                while True:
+                    data = response.read(8192)
+                    if not data:
+                        break
+                    counter += len(data)
+                    output_file.write(data)
+
+                    # We perform animation by overwriting the elements.
+                    weights_warning.warning(
+                        "Downloading %s... (%6.2f/%6.2f MB)"
+                        % (url, counter / MEGABYTES, length / MEGABYTES)
+                    )
+                    progress_bar.progress(min(counter / length, 1.0))
+    # Finally, we remove these visual elements by calling .empty().
+    finally:
+        if weights_warning is not None:
+            weights_warning.empty()
+        if progress_bar is not None:
+            progress_bar.empty()
+
+MODEL_URL = "https://github.com/mozilla/DeepSpeech/releases/download/v0.9.3/deepspeech-0.9.3-models.pbmm"  # noqa
+LANG_MODEL_URL = "https://github.com/mozilla/DeepSpeech/releases/download/v0.9.3/deepspeech-0.9.3-models.scorer"  # noqa
+MODEL_LOCAL_PATH = HERE / "models/deepspeech-0.9.3-models.pbmm"
+LANG_MODEL_LOCAL_PATH = HERE / "models/deepspeech-0.9.3-models.scorer"
+download_file(MODEL_URL, MODEL_LOCAL_PATH, expected_size=188915987)
+download_file(LANG_MODEL_URL, LANG_MODEL_LOCAL_PATH, expected_size=953363776)
+lm_alpha = 0.931289039105002
+lm_beta = 1.1834137581510284
+beam = 100
+def app_sst_with_video(
+    model_path: str, lm_path: str, lm_alpha: float, lm_beta: float, beam: int
+):
+    class AudioProcessor(AudioProcessorBase):
+        frames_lock: threading.Lock
+        frames: deque
+
+        def __init__(self) -> None:
+            self.frames_lock = threading.Lock()
+            self.frames = deque([])
+
+        async def recv_queued(self, frames: List[av.AudioFrame]) -> av.AudioFrame:
+            with self.frames_lock:
+                self.frames.extend(frames)
+
+            # Return empty frames to be silent.
+            new_frames = []
+            for frame in frames:
+                input_array = frame.to_ndarray()
+                new_frame = av.AudioFrame.from_ndarray(
+                    np.zeros(input_array.shape, dtype=input_array.dtype),
+                    layout=frame.layout.name,
+                )
+                new_frame.sample_rate = frame.sample_rate
+                new_frames.append(new_frame)
+
+            return new_frames
+
+    webrtc_ctx = webrtc_streamer(
+        key="speech-to-text-w-video",
+        mode=WebRtcMode.SENDRECV,
+        audio_processor_factory=AudioProcessor,
+        client_settings=ClientSettings(
+            rtc_configuration={
+                "iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]
+            },
+            media_stream_constraints={"video": True, "audio": True},
+        ),
+    )
+
+    status_indicator = st.empty()
+
+    if not webrtc_ctx.state.playing:
+        return
+
+    status_indicator.write("Loading...")
+    text_output = st.empty()
+    stream = None
+
+    while True:
+        if webrtc_ctx.audio_processor:
+            if stream is None:
+                from deepspeech import Model
+
+                model = Model(model_path)
+                model.enableExternalScorer(lm_path)
+                model.setScorerAlphaBeta(lm_alpha, lm_beta)
+                model.setBeamWidth(beam)
+
+                stream = model.createStream()
+
+                status_indicator.write("Model loaded.")
+
+            sound_chunk = pydub.AudioSegment.empty()
+
+            audio_frames = []
+            with webrtc_ctx.audio_processor.frames_lock:
+                while len(webrtc_ctx.audio_processor.frames) > 0:
+                    frame = webrtc_ctx.audio_processor.frames.popleft()
+                    audio_frames.append(frame)
+
+            if len(audio_frames) == 0:
+                time.sleep(0.1)
+                status_indicator.write("No frame arrived.")
+                continue
+
+            status_indicator.write("Running. Say something!")
+
+            for audio_frame in audio_frames:
+                sound = pydub.AudioSegment(
+                    data=audio_frame.to_ndarray().tobytes(),
+                    sample_width=audio_frame.format.bytes,
+                    frame_rate=audio_frame.sample_rate,
+                    channels=len(audio_frame.layout.channels),
+                )
+                sound_chunk += sound
+
+            if len(sound_chunk) > 0:
+                sound_chunk = sound_chunk.set_channels(1).set_frame_rate(
+                    model.sampleRate()
+                )
+                buffer = np.array(sound_chunk.get_array_of_samples())
+                stream.feedAudioContent(buffer)
+                text = stream.intermediateDecode()
+                text_output.markdown(f"**Text:** {text}")
+        else:
+            status_indicator.write("AudioReciver is not set. Abort.")
+            break
+
+
 @st.cache(allow_output_mutation=True)
 def update_slider():
     return {"slide":0}
@@ -61,6 +219,7 @@ class DrawBounds(VideoTransformerBase):
         return img
 
 
+
 class VideoTransformer(VideoTransformerBase):
     frame_lock: threading.Lock
     x_:int
@@ -81,23 +240,6 @@ class VideoTransformer(VideoTransformerBase):
         global classes
         self.current_symbol=self.predicted_class
         self.classes_dict[self.current_symbol]+=1
-        #print(current_symbol)
-        # if(self.current_symbol=='nothing' and self.classes_dict[self.current_symbol]>50):
-        #     print("Nothing")
-        #     word=spell.correction(word)
-        #     if(len(self.sentence)==0):
-        #         return
-        #     mp3_fp=BytesIO()
-        #     tts = gTTS(self.word)
-        #     tts.write_to_fp(mp3_fp)
-        #     for i in classes:
-        #         self.classes_dict[i]=0
-        #     if(len(self.sentence)>0):
-        #         self.sentence+=" "
-            
-        #     self.sentence+=self.word
-        #     self.word=""
-        #     return
         if(self.classes_dict[self.current_symbol]>50):
             for i in classes:
                 if(i==self.current_symbol):
@@ -158,62 +300,75 @@ if not draw_bounds:
     
     
 if draw_bounds:
-    st.sidebar.title("Here are the common phrases for you to hear\n")
-
-    phrase = st.sidebar.selectbox('Select a phrase to listen to',('Good morning','Good afternoon','Good night','Hello','Hi','How are you?','I am fine','What are you doing?','Thank you','Sorry','Okay'))
-    st.markdown("See the sidebar to change the phrase")
-    for i in common_words:
-        if(i == phrase):
-            st.markdown(phrase)
-            mp3_fp = BytesIO()
-            tts = gTTS(i)
-            tts.write_to_fp(mp3_fp)   
-            st.audio(mp3_fp)
-
-    col1, col2 = st.beta_columns(2)
+    
+    col1, col2, col3 = st.beta_columns(3)
+    with col3:
+        st.header("Here are the commmon phrases, Just click on the button and play the audio\n")
+        for i in common_words:
+            if(st.button(i,key=i)):
+                mp3_fp = BytesIO()
+                tts = gTTS(i)
+                tts.write_to_fp(mp3_fp)   
+                st.audio(mp3_fp)
 
     with col2:
-        st.title("Speech to text")
-        stt_button = Button(label="Speak", width=100)
-        stt_button.js_on_event("button_click", CustomJS(code="""
-            var recognition = new webkitSpeechRecognition();
-            recognition.continuous = true;
-            recognition.interimResults = true;
+        # tts_button = Button(label="Speak", width=100)
+
+        # tts_button.js_on_event("button_click", CustomJS(code=f"""
+        #     var u = new SpeechSynthesisUtterance();
+        #     u.text = "{text}";
+        #     u.lang = 'en-US';
+
+        #     speechSynthesis.speak(u);
+        #     """))
+        # st.bokeh_chart(tts_button)
+
+        # st.header("Speech to text")
+        # stt_button = Button(label="Speak", width=100)
+        # stt_button.js_on_event("button_click", CustomJS(code="""
+        #     var recognition = new webkitSpeechRecognition();
+        #     recognition.continuous = true;
+        #     recognition.interimResults = true;
         
-            recognition.onresult = function (e) {
-                var value = "";
-                for (var i = e.resultIndex; i < e.results.length; ++i) {
-                    if (e.results[i].isFinal) {
-                        value += e.results[i][0].transcript;
-                    }
-                }
-                if ( value != "") {
-                    document.dispatchEvent(new CustomEvent("GET_TEXT", {detail: value}));
-                }
-            }
-            recognition.start();
-            """))
+        #     recognition.onresult = function (e) {
+        #         var value = "";
+        #         for (var i = e.resultIndex; i < e.results.length; ++i) {
+        #             if (e.results[i].isFinal) {
+        #                 value += e.results[i][0].transcript;
+        #             }
+        #         }
+        #         if ( value != "") {
+        #             document.dispatchEvent(new CustomEvent("GET_TEXT", {detail: value}));
+        #         }
+        #     }
+        #     recognition.start();
+        #     """))
 
-        result = streamlit_bokeh_events(
-            stt_button,
-            events="GET_TEXT",
-            key="listen",
-            refresh_on_update=False,
-            override_height=75,
-            debounce_time=0)
+        # result = streamlit_bokeh_events(
+        #     stt_button,
+        #     events="GET_TEXT",
+        #     key="listen",
+        #     refresh_on_update=False,
+        #     override_height=75,
+        #     debounce_time=0)
 
-        if result:
-            if "GET_TEXT" in result:
-                st.write(result.get("GET_TEXT"))
+        # if result:
+        #     if "GET_TEXT" in result:
+        #         st.write(result.get("GET_TEXT"))
+        app_sst_with_video(
+            str(MODEL_LOCAL_PATH), str(LANG_MODEL_LOCAL_PATH), lm_alpha, lm_beta, beam
+        )
+
 
     with col1:
-        st.title("Sign to speech")
+        st.header("Sign to speech")
         st_audio=st.empty()
         webrtc_ctx = webrtc_streamer(
             key="Hemashirisha123",
             mode=WebRtcMode.SENDRECV,
             video_transformer_factory=VideoTransformer,
             async_transform=True,
+            client_settings=WEBRTC_CLIENT_SETTINGS,
         )
      
         if webrtc_ctx.video_transformer:
@@ -227,7 +382,3 @@ if draw_bounds:
                 tts = gTTS(sen)
                 tts.write_to_fp(mp4)
                 st.audio(mp4)
-            
-
-  
-
